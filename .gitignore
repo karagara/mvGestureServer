@@ -1,0 +1,4 @@
+#Ignore build and debug files
+Debug
+gestureServer/Debug
+gestureServer.sdf

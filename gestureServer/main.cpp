@@ -9,12 +9,13 @@
 
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-
+#include <opencv2/video/background_segm.hpp>
 
 #define PI 3.14159265
 
 using namespace cv;
 using namespace std;
+
 
 //declare the local functions
 void morphologicalImgProc(Mat &frame);
@@ -52,10 +53,12 @@ void morphologicalImgProc(Mat &frame) {
 	cv::morphologyEx(frame, frame, MORPH_CLOSE, element);
 }
 
-string trackHand(Mat src, Mat &dest) {
+//the important function to track the hand, the algorithm is described in the report
+std::string trackHand(Mat src, Mat &dest) {
 	//initialization local variables
 	Rect boundRect;
 	int largestObj;
+	int boundingBoxHeight = 0;
 	vector<vector<Point> > contours; //store all the contours
 	vector<vector<Point> > contoursSet(contours.size());//store large contours
 	vector<Vec4i> hierarchy;
@@ -66,7 +69,6 @@ string trackHand(Mat src, Mat &dest) {
 	double area = 0;
 	double maxArea = 0;
 	bool handFound = false;
-
 	String resultMsg = "no-command";
 	//find all the contours in the threshold Frame
 	findContours(src, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
@@ -86,6 +88,7 @@ string trackHand(Mat src, Mat &dest) {
 		drawContours(dest, contours, largestObj, Scalar(0, 0, 255), 3, 8, hierarchy);
 		//find the convex points for the largest object which is hand
 		convexHull(contours[largestObj], convexHullPoint, true, true);
+		approxPolyDP(Mat(contours[largestObj]), contours[largestObj], 3, true);
 		//use moment method to find the center point
 		Moments moment = moments(Mat(contours[largestObj]), true);
 		int centerX = moment.m10 / moment.m00;
@@ -97,6 +100,9 @@ string trackHand(Mat src, Mat &dest) {
 		circle(dest, centerPoint, 8, Scalar(255, 0, 0), CV_FILLED);
 		//put the BoundingBox in the contour region
 		rectangle(dest, boundRect, Scalar(0, 0, 255), 2, 8, 0);
+		boundingBoxHeight = boundRect.height;
+		//if( boundingBoxHeight <= 200)
+		//	handFound = false;
 		if (handFound) {
 			int countHullPoint = convexHullPoint.size();
 			int maxdist = 0;
@@ -132,7 +138,7 @@ string trackHand(Mat src, Mat &dest) {
 			//cout << angle << endl;
 			resultMsg = doAction(angle, countFinger);
 			//sendResult(resultMsg);
-			putText(dest, integerToString(countFinger), printPoint, 1, 5, Scalar(0, 255, 0), 1, 5, false);
+			//putText(dest, integerToString(countFinger), printPoint, 1, 5, Scalar(0, 255, 0), 1, 5, false);
 		}
 	}
 	return resultMsg;
@@ -144,22 +150,22 @@ void sendResult(String msg){
 }
 
 //action performed based on the number of fingers and the total angle
-//1.  5 fingers && total angle: 270 - 285
-//2.  4 fingers && total angle: 240 - 255
+//1.  5 fingers && total angle: 265 - 295
+//2.  4 fingers && total angle: 235 - 260
 //3.  3 fingers && total angle: 190 - 210
-//4.  2 fingers && total angle: 120 - 130
-//5.  1 finger && total angle:  65 - 75
+//4.  2 fingers && total angle: 110 - 130
+//5.  1 finger && total angle:  65 - 85
 String doAction(const int totalAngleOfFinger, const int fingerSize){
 	String result = "no-command";
-	if (totalAngleOfFinger >= 270 && totalAngleOfFinger <= 285 && (fingerSize == 5))
+	if (totalAngleOfFinger >= 265 && totalAngleOfFinger <= 295 && (fingerSize == 5))
 		result = "scroll-up";
-	else if (totalAngleOfFinger >= 240 && totalAngleOfFinger <= 255 && fingerSize == 4)
+	else if (totalAngleOfFinger >= 240 && totalAngleOfFinger <= 265 && fingerSize == 4)
 		result = "scroll-down";
 	else if (totalAngleOfFinger >= 190 && totalAngleOfFinger <= 210 && fingerSize == 3)
-		result = "scroll-to-top";
-	else if (totalAngleOfFinger >= 120 && totalAngleOfFinger <= 130 && (fingerSize == 2))
+		result = "back-page";
+	else if (totalAngleOfFinger >= 100 && totalAngleOfFinger <= 130 && (fingerSize == 2))
 		result = "refresh-page";
-	else if (totalAngleOfFinger >= 65 && totalAngleOfFinger <= 75 && (fingerSize == 1))
+	else if (totalAngleOfFinger >= 65 && totalAngleOfFinger <= 95 && (fingerSize == 1))
 		result = "color-divs";
 	return result;
 }
@@ -200,12 +206,18 @@ public:
 	void count() {
 		Mat cameraFrame, blurFrame, threshold1, threshold2, closedFrame, hsvFrame, colorObjectFrame, thresholdFrame;
 		VideoCapture stream1;
+		Mat grayscale;
+		Mat fgMaskMOG;
+		Mat foreground;
+		Mat background;
+		Ptr <BackgroundSubtractor> pMOG;
+		pMOG = new BackgroundSubtractorMOG();
 
 		//default the capture frame size to the certain size & open the camera
 		stream1.set(CV_CAP_PROP_FRAME_WIDTH, 640);
 		stream1.set(CV_CAP_PROP_FRAME_HEIGHT, 480);
 		stream1.open(0);
-
+		background = imread("background.jpg");
 		//report the error if the camera not connected properly
 		if (!stream1.isOpened()) {
 			cout << "cannot open camera";
@@ -216,16 +228,19 @@ public:
 
 			//get image from stream
 			stream1.read(cameraFrame);
+			pMOG->operator ()(cameraFrame, foreground);
+			medianBlur(foreground, foreground, 3);
+			cv::cvtColor(foreground, foreground, CV_GRAY2BGR);
 
 			//switch the RGB to HSV space
-			cv::cvtColor(cameraFrame, hsvFrame, CV_BGR2HSV);
+			cv::cvtColor(foreground, hsvFrame, CV_BGR2HSV);
 
 			//testing in the blue glove on hand
 			//need to adjust before the live demo
-			//cv::inRange(hsvFrame, Scalar(58, 58, 95), Scalar(133, 154, 256), thresholdFrame);
+			//cv::inRange(hsvFrame, Scalar(86, 72, 142), Scalar(117, 181, 256), thresholdFrame);
 
 			//Tracking actual hand in restricted background
-			cv::inRange(hsvFrame, Scalar(96, 23, 123), Scalar(256, 100, 256),thresholdFrame);
+			cv::inRange(hsvFrame, Scalar(0, 0, 255), Scalar(256, 256, 256), thresholdFrame);
 
 			//blur image to remove basic imperfections
 			medianBlur(thresholdFrame, thresholdFrame, 5);
@@ -240,6 +255,8 @@ public:
 
 			namedWindow("Hand_Gesture_Detection");
 			imshow("Hand_Gesture_Detection", cameraFrame);
+			namedWindow("foreground");
+			imshow("foreground", foreground);
 
 			if (waitKey(10) >= 0)
 				break;
